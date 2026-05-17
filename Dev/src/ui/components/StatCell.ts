@@ -1,7 +1,7 @@
 // One cell of the stat row — big tabular value + small uppercase label.
 
 import { NS } from '../../bootstrap/config';
-import { h } from '../utils/dom';
+import { h } from '../../utils/dom';
 
 export interface StatCellConfig {
     value: string;

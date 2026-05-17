@@ -62,6 +62,18 @@ export const EN_STRINGS: Record<StringKey, string> = {
     fmt_both: 'MD + JSON',
     fmt_md: 'MD only',
     fmt_json: 'JSON only',
+    fmt_sharded: 'Sharded (AI-friendly)',
+
+    // ── Sharded format options ────────────────────────────────────
+    section_shard: 'Sharding',
+    label_shard_cap: 'Shard cap (lines)',
+    desc_shard_cap:
+        'Max lines per shard. Posts are atomic — a single oversized post becomes its own shard.',
+
+    // ── Live shard preview (CaptureTab) ───────────────────────────
+    shard_preview_label: 'Shards',
+    shard_preview_shards: 'shards',
+    shard_preview_oversize: 'oversize',
 
     // ── Capture strategy picker ───────────────────────────────────
     strategy_scroll: 'Scroll capture',
@@ -110,6 +122,10 @@ export const EN_STRINGS: Record<StringKey, string> = {
     toast_export_md: 'Downloading Markdown',
     toast_export_json: 'Downloading JSON',
     toast_export_both: 'Downloading MD + JSON',
+    toast_export_sharded: 'Building sharded ZIP',
+    toast_export_sharded_done: 'Sharded ZIP ready',
+    toast_long_path_warn:
+        'Long filename. Copying it into a deep destination may trigger "path too long" — keep the destination short, or enable Windows LongPathsEnabled.',
     toast_autoscroll_end: 'Auto-scroll finished: reached the bottom',
     toast_autoscroll_max: 'Auto-scroll: hit the max-iterations cap',
     toast_apicapture_started: 'API capture started',

@@ -52,7 +52,17 @@ export const STORAGE_KEYS = {
     captureStrategy: `${NS}.captureStrategy`,
     autoSaveOnComplete: `${NS}.autoSaveOnComplete`,
     filenamePrefix: `${NS}.filenamePrefix`,
+    shardCap: `${NS}.shardCap`,
 } as const;
+
+// Default cap for the sharded export (one shard ≤ this many rendered lines).
+// 1800 leaves ~200 lines of headroom below Claude Code's default Read limit
+// of 2000 lines, so an AI tool can pull an entire shard in one call.
+export const DEFAULT_SHARD_CAP_LINES = 1800;
+// Hard bounds for the cap input. Below ~400 you get an absurd number of tiny
+// shards; above 2000 you defeat the whole point.
+export const MIN_SHARD_CAP_LINES = 400;
+export const MAX_SHARD_CAP_LINES = 2000;
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];
 

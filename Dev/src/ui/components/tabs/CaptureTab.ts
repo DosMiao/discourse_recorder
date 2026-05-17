@@ -3,13 +3,13 @@
 // only apply to the *next* recording session.
 
 import { NS, STORAGE_KEYS } from '../../../bootstrap/config';
-import { Storage } from '../../../infra/storage/storage';
+import { storageOP } from '../../../infra/storage/storageOperator';
 import { Store } from '../../../core/store';
 import { Bus } from '../../../core/eventBus';
 import type { CaptureStrategy } from '../../../core/types';
 import { Recorder } from '../../../recorder/recorder';
-import { formatHMS } from '../../../exporter/exporter';
-import { h } from '../../utils/dom';
+import { formatHMS, previewShardPlan } from '../../../exporter/exporter';
+import { h } from '../../../utils/dom';
 import { IconManager } from '../IconManager';
 import { Toast } from '../Toast';
 import { createButton, type ButtonHandle } from '../Button';
@@ -50,6 +50,17 @@ export function createCaptureTab(deps: CaptureTabDeps): CaptureTabHandle {
         statImages.element,
         statElapsed.element,
     ]);
+
+    // Live shard preview — derives from Store.posts every refresh, hidden
+    // until any posts have been captured. The user wanted statistics visible
+    // *while* recording (not only at export), and this is the cheapest signal:
+    // shard count + oversize warnings tell them whether their thread will
+    // produce a clean sharded export or hit the oversize edge case.
+    const shardPreview = h('div', {
+        class: `${NS}-toggle-desc`,
+        style: { paddingTop: '4px', textAlign: 'center' },
+    }) as HTMLDivElement;
+    shardPreview.hidden = true;
 
     // ── mode row ──────────────────────────────────────────────
     const modeText = h('span', { text: i18n.t('status_idle') }) as HTMLSpanElement;
@@ -140,7 +151,7 @@ export function createCaptureTab(deps: CaptureTabDeps): CaptureTabHandle {
         ],
         onChange: (next) => {
             Store.patch({ captureStrategy: next });
-            Storage.set(STORAGE_KEYS.captureStrategy, next);
+            storageOP.set(STORAGE_KEYS.captureStrategy, next);
         },
         ariaLabel: i18n.t('section_capture_strategy'),
     });
@@ -175,7 +186,15 @@ export function createCaptureTab(deps: CaptureTabDeps): CaptureTabHandle {
             id: `${NS}-tabpanel-capture`,
             'aria-labelledby': `${NS}-tab-capture`,
         },
-        [stats, modeRow, startBtn.element, actionRow, clearBtn.element, strategyGroup]
+        [
+            stats,
+            shardPreview,
+            modeRow,
+            startBtn.element,
+            actionRow,
+            clearBtn.element,
+            strategyGroup,
+        ]
     ) as HTMLDivElement;
 
     function refresh(): void {
@@ -188,6 +207,24 @@ export function createCaptureTab(deps: CaptureTabDeps): CaptureTabHandle {
         statPosts.setValue(String(counts.posts || counts.chunks));
         statImages.setValue(String(counts.images));
         statElapsed.setValue(formatHMS(Store.elapsedMs()));
+
+        // Shard preview — only computes when posts are present, and is
+        // memoised inside previewShardPlan() so this is cheap to call
+        // every state:changed tick.
+        const plan = counts.posts > 0 ? previewShardPlan() : null;
+        if (plan) {
+            const oversize = plan.totals.oversizeShards;
+            const head = `📦 ${plan.shards.length} ${i18n.t('shard_preview_shards')}`;
+            const tail =
+                oversize > 0
+                    ? ` · ⚠ ${oversize} ${i18n.t('shard_preview_oversize')}`
+                    : '';
+            shardPreview.textContent = head + tail;
+            shardPreview.hidden = false;
+        } else {
+            shardPreview.hidden = true;
+            shardPreview.textContent = '';
+        }
 
         const modeLabel =
             mode === 'discourse'

@@ -1,14 +1,14 @@
 // Single source of truth. All UI components reactively render off this state
 // via Bus.on('state:changed', ...). The store does NOT persist settings —
-// that's the caller's responsibility (they save via Storage and patch the
+// that's the caller's responsibility (they save via storageOP and patch the
 // store). Keeping these concerns separate means the store can be reset for
 // tests without touching disk.
 //
-// Factory shape — `createStore(deps)` — accepts {storage, bus} so tests can
-// inject stubs. The module-level `Store` is the production singleton.
+// Factory shape — `createStore(deps)` — accepts {storageOP, bus} so tests
+// can inject stubs. The module-level `Store` is the production singleton.
 
-import { STORAGE_KEYS } from '../bootstrap/config';
-import { Storage, type Storage as StorageT } from '../infra/storage/storage';
+import { STORAGE_KEYS, DEFAULT_SHARD_CAP_LINES } from '../bootstrap/config';
+import { storageOP, type StorageOperator } from '../infra/storage/storageOperator';
 import { Bus, type EventBus } from './eventBus';
 import type {
     CaptureMode,
@@ -50,6 +50,9 @@ export interface State {
     captureStrategy: CaptureStrategy;
     autoSaveOnComplete: boolean;
     filenamePrefix: boolean;
+    // Max rendered lines per shard when exportFormat === 'sharded'. Persisted
+    // so the user's choice survives across sessions.
+    shardCap: number;
 
     // Per-session derived state — set on Recorder.start, used by the
     // exporter so all files from one session share the same {date}_{title}
@@ -66,11 +69,11 @@ export interface Store {
 }
 
 interface StoreDeps {
-    storage: StorageT;
+    storageOP: StorageOperator;
     bus: EventBus;
 }
 
-function loadInitialState(storage: StorageT): State {
+function loadInitialState(storage: StorageOperator): State {
     return {
         recording: false,
         paused: false,
@@ -100,13 +103,14 @@ function loadInitialState(storage: StorageT): State {
         ),
         autoSaveOnComplete: storage.get<boolean>(STORAGE_KEYS.autoSaveOnComplete, false),
         filenamePrefix: storage.get<boolean>(STORAGE_KEYS.filenamePrefix, true),
+        shardCap: storage.get<number>(STORAGE_KEYS.shardCap, DEFAULT_SHARD_CAP_LINES),
 
         sessionSlug: null,
     };
 }
 
 export function createStore(deps: StoreDeps): Store {
-    const { storage, bus } = deps;
+    const { storageOP: storage, bus } = deps;
     const state: State = loadInitialState(storage);
 
     return {
@@ -148,4 +152,4 @@ export function createStore(deps: StoreDeps): Store {
     };
 }
 
-export const Store: Store = createStore({ storage: Storage, bus: Bus });
+export const Store: Store = createStore({ storageOP, bus: Bus });

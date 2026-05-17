@@ -60,6 +60,17 @@ export const ZH_STRINGS = {
     fmt_both: 'MD + JSON',
     fmt_md: '仅 MD',
     fmt_json: '仅 JSON',
+    fmt_sharded: '分片 (AI 友好)',
+
+    // ── Sharded format options ────────────────────────────────────
+    section_shard: '分片设置',
+    label_shard_cap: '分片上限 (行)',
+    desc_shard_cap: '每片最多多少行，超过则切到下一片；单楼超过上限会独占一片',
+
+    // ── Live shard preview (CaptureTab) ───────────────────────────
+    shard_preview_label: '分片预览',
+    shard_preview_shards: '片',
+    shard_preview_oversize: '超长',
 
     // ── Capture strategy picker ───────────────────────────────────
     strategy_scroll: '滚动抓取',
@@ -107,6 +118,10 @@ export const ZH_STRINGS = {
     toast_export_md: '正在下载 Markdown',
     toast_export_json: '正在下载 JSON',
     toast_export_both: '正在下载 MD + JSON',
+    toast_export_sharded: '正在打包分片 ZIP',
+    toast_export_sharded_done: '分片 ZIP 完成',
+    toast_long_path_warn:
+        '文件名较长。复制到深层路径可能报 "path too long" —— 建议保持目标路径较短，或在 Windows 启用长路径支持（LongPathsEnabled）',
     toast_autoscroll_end: '自动滚动完成: 已到达底部',
     toast_autoscroll_max: '自动滚动: 已达最大轮次',
     toast_apicapture_started: '正在使用 API 抓取',

@@ -2,7 +2,7 @@
 // needs a longer description than a segmented control comfortably shows.
 
 import { NS } from '../../bootstrap/config';
-import { h } from '../utils/dom';
+import { h } from '../../utils/dom';
 
 export interface OptionCardItem<V extends string> {
     value: V;

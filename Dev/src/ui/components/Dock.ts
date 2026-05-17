@@ -13,13 +13,14 @@ import {
     VERSION,
     type TabId,
 } from '../../bootstrap/config';
-import { Storage } from '../../infra/storage/storage';
+import { storageOP } from '../../infra/storage/storageOperator';
 import { Store } from '../../core/store';
 import { Bus } from '../../core/eventBus';
 import { Toast } from './Toast';
 import { IconManager } from './IconManager';
-import { h } from '../utils/dom';
+import { h } from '../../utils/dom';
 import { attachRimLighting } from '../utils/rimLighting';
+import { emitTabChanged } from '../events';
 import { createTabs, type TabsHandle } from './Tabs';
 import { createCaptureTab } from './tabs/CaptureTab';
 import { createExportTab } from './tabs/ExportTab';
@@ -130,7 +131,7 @@ export function createDock(deps: DockDeps): DockHandle {
                       ? { left: Math.round(rect.left), bottom: Math.max(8, bottom) }
                       : { left: Math.round(rect.left), top: Math.round(rect.top) };
             applyPos(pos);
-            Storage.set(STORAGE_KEYS.dockPos, pos);
+            storageOP.set(STORAGE_KEYS.dockPos, pos);
         });
     }
 
@@ -139,7 +140,7 @@ export function createDock(deps: DockDeps): DockHandle {
         const next = !refs.dock.classList.contains(`${NS}-mini`);
         refs.dock.classList.toggle(`${NS}-mini`, next);
         Store.patch({ dockMinimized: next });
-        Storage.set(STORAGE_KEYS.dockMin, next);
+        storageOP.set(STORAGE_KEYS.dockMin, next);
         refs.miniBtn.innerHTML = IconManager.flexible(next ? 'expand' : 'minimize');
         const label = next ? i18n.t('dock_expand') : i18n.t('dock_minimize');
         refs.miniBtn.setAttribute('aria-label', label);
@@ -149,7 +150,7 @@ export function createDock(deps: DockDeps): DockHandle {
     function setActiveTab(id: TabId): void {
         if (!tabs || !captureTab || !exportTab || !settingsTab) return;
         Store.patch({ activeTab: id });
-        Storage.set(STORAGE_KEYS.activeTab, id);
+        storageOP.set(STORAGE_KEYS.activeTab, id);
         captureTab.element.classList.toggle(
             `${NS}-tabpanel-active`,
             id === 'capture'
@@ -162,7 +163,7 @@ export function createDock(deps: DockDeps): DockHandle {
             `${NS}-tabpanel-active`,
             id === 'settings'
         );
-        Bus.emit('tab:changed', { tab: id });
+        emitTabChanged(id);
     }
 
     function startElapsedTicker(): void {
@@ -305,7 +306,7 @@ export function createDock(deps: DockDeps): DockHandle {
             footerElapsed,
         };
 
-        const pos = Storage.get<DockPosition | null>(STORAGE_KEYS.dockPos, null);
+        const pos = storageOP.get<DockPosition | null>(STORAGE_KEYS.dockPos, null);
         if (pos && typeof pos === 'object') applyPos(pos);
 
         if (Store.get('dockMinimized')) {
@@ -414,7 +415,7 @@ export function createDock(deps: DockDeps): DockHandle {
         const persisted = Store.get('activeTab');
         if (!TAB_IDS.includes(persisted)) {
             Store.patch({ activeTab: 'capture' });
-            Storage.set(STORAGE_KEYS.activeTab, 'capture');
+            storageOP.set(STORAGE_KEYS.activeTab, 'capture');
         }
 
         refresh();

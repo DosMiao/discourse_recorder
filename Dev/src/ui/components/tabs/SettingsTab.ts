@@ -3,11 +3,11 @@
 // settings).
 
 import { NS, BUILD_DATE, VERSION, STORAGE_KEYS } from '../../../bootstrap/config';
-import { Storage } from '../../../infra/storage/storage';
+import { storageOP } from '../../../infra/storage/storageOperator';
 import { Store } from '../../../core/store';
 import type { ThemeMode } from '../../../core/types';
 import { Theme } from '../../styles/darkMode';
-import { h } from '../../utils/dom';
+import { h } from '../../../utils/dom';
 import { Toast } from '../Toast';
 import { createSegmented, type SegmentedHandle } from '../Segmented';
 import { createToggleRow } from '../Switch';
@@ -74,7 +74,7 @@ export function createSettingsTab(deps: SettingsTabDeps): SettingsTabHandle {
         checked: Store.get('captureImages'),
         onChange: (v) => {
             Store.patch({ captureImages: v });
-            Storage.set(STORAGE_KEYS.captureImages, v);
+            storageOP.set(STORAGE_KEYS.captureImages, v);
         },
         ariaLabel: i18n.t('toggle_capture_images'),
     });
@@ -84,7 +84,7 @@ export function createSettingsTab(deps: SettingsTabDeps): SettingsTabHandle {
         checked: Store.get('autoScroll'),
         onChange: (v) => {
             Store.patch({ autoScroll: v });
-            Storage.set(STORAGE_KEYS.autoScroll, v);
+            storageOP.set(STORAGE_KEYS.autoScroll, v);
         },
         ariaLabel: i18n.t('toggle_auto_scroll'),
     });
@@ -94,7 +94,7 @@ export function createSettingsTab(deps: SettingsTabDeps): SettingsTabHandle {
         checked: Store.get('autoStart'),
         onChange: (v) => {
             Store.patch({ autoStart: v });
-            Storage.set(STORAGE_KEYS.autoStart, v);
+            storageOP.set(STORAGE_KEYS.autoStart, v);
         },
         ariaLabel: i18n.t('toggle_auto_start'),
     });
@@ -132,7 +132,7 @@ export function createSettingsTab(deps: SettingsTabDeps): SettingsTabHandle {
         text: i18n.t('btn_reset_prefs'),
         style: { marginTop: '6px' },
         onclick: () => {
-            for (const k of Object.values(STORAGE_KEYS)) Storage.del(k);
+            for (const k of Object.values(STORAGE_KEYS)) storageOP.del(k);
             Toast.show(i18n.t('toast_prefs_reset'), 'info', 3200);
         },
     });

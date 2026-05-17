@@ -2,7 +2,7 @@
 // The visual thumb is rendered via the ::after pseudo-element in controls.ts.
 
 import { NS } from '../../bootstrap/config';
-import { h } from '../utils/dom';
+import { h } from '../../utils/dom';
 
 export interface SwitchConfig {
     checked: boolean;

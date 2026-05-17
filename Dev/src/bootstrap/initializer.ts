@@ -1,24 +1,24 @@
 // Composition root. Runs the actual boot sequence — order matters:
 //   1. Skip iframes — the script runs at top level only.
 //   2. Skip non-Discourse pages unless the user opted in via window.__dtrShow.
-//   3. Inject styles before theme apply, because the theme reads computed
-//      values that depend on the token CSS.
-//   4. Theme.init applies the persisted mode with skipTransition: true so
-//      the first paint doesn't flash light→dark.
-//   5. Dock.mount() subscribes to Bus events itself; we just kick keyboard
-//      shortcuts and optional auto-start.
+//   3. The renderEngine injects styles + mounts the dock. Theme.init applies
+//      the persisted mode with skipTransition: true so the first paint
+//      doesn't flash light→dark.
+//   4. Wire keyboard shortcuts and optional auto-start.
 //
 // SPA awareness: Discourse navigates client-side without a full reload, so
 // the initial document.readyState may fire while the topic isn't yet in DOM.
 // `bootPoll` retries up to 10 s.
+//
+// Mirrors AmexOfferMax's initializer: services + renderEngine in via deps,
+// warmup promises (here just topic detection) resolved early so the boot
+// path can fail fast.
 
-import { ROOT_ID } from './config';
-import { injectStyles } from '../ui/styles/injectStyles';
 import { isDiscoursePage } from '../extractor/discourse';
 import { Recorder } from '../recorder/recorder';
-import { createDock, type DockHandle } from '../ui/components/Dock';
 import type { ApplicationServices } from './serviceFactory';
-import type { ThemeMode } from '../core/types';
+import type { RenderEngine } from './renderEngine/renderEngine';
+import type { ThemeMode, ToastType } from '../core/types';
 
 declare global {
     interface Window {
@@ -26,17 +26,23 @@ declare global {
     }
 }
 
+interface InitializerDeps extends ApplicationServices {
+    renderEngine: RenderEngine;
+    warmup: {
+        topicReadyPromise: Promise<{ isDiscourse: boolean }>;
+    };
+}
+
 export interface Initializer {
-    boot(): void;
+    boot(): Promise<void>;
     bootPoll(): void;
 }
 
-export function createInitializer(services: ApplicationServices): Initializer {
-    const { store, theme, i18n, toast, logger } = services;
-    const logBoot = logger.namespace('bootstrap');
-    let dock: DockHandle | null = null;
+export function createInitializer(deps: InitializerDeps): Initializer {
+    const { config, store, theme, i18n, toast, renderEngine, warmup, logBootstrap } = deps;
     let bootRetries = 0;
     const MAX_RETRIES = 20;
+    let booted = false;
 
     function attachKeyboardShortcuts(): void {
         document.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -58,32 +64,40 @@ export function createInitializer(services: ApplicationServices): Initializer {
                         : next === 'dark'
                           ? 'theme_dark'
                           : 'theme_system';
+                const type: ToastType = 'success';
                 toast.show(
                     `${i18n.t('toast_theme_changed')}: ${i18n.t(labelKey)}`,
-                    'success',
+                    type,
                     1500
                 );
             }
         });
     }
 
-    function boot(): void {
+    async function boot(): Promise<void> {
+        if (booted) return;
         if (window.top !== window.self) return; // skip iframes
-        if (document.getElementById(ROOT_ID)?.querySelector(`.dtr-dock`)) {
+
+        const span = logBootstrap.span('boot', { message: 'mount + wire shortcuts' });
+
+        const { isDiscourse } = await warmup.topicReadyPromise;
+        if (!isDiscourse && !window.__dtrShow) {
+            span.end({ skipped: true, reason: 'non-discourse page' }, 'info');
             return;
         }
-        if (!isDiscoursePage() && !window.__dtrShow) return;
 
-        injectStyles();
         theme.init();
-
-        dock = createDock({ i18n });
-        dock.mount();
+        const mounted = renderEngine.mount();
+        if (!mounted) {
+            span.end({ skipped: true, reason: 'dock already present' }, 'info');
+            return;
+        }
 
         attachKeyboardShortcuts();
+        booted = true;
 
-        logBoot.info('mounted', {
-            message: 'dock + theme + shortcuts ready',
+        logBootstrap.info('mounted', {
+            message: 'renderEngine + theme + shortcuts ready',
             locale: i18n.locale(),
             theme: store.get('theme'),
         });
@@ -95,18 +109,23 @@ export function createInitializer(services: ApplicationServices): Initializer {
         ) {
             setTimeout(() => Recorder.start(), 600);
         }
+
+        span.end({ booted: true }, 'info');
     }
 
     function bootPoll(): void {
-        if (document.getElementById(ROOT_ID)?.querySelector(`.dtr-dock`)) {
-            return;
-        }
+        if (booted) return;
         if (isDiscoursePage()) {
-            boot();
+            void boot();
             return;
         }
         if (bootRetries++ < MAX_RETRIES) setTimeout(bootPoll, 500);
     }
+
+    // Reference config so the linter doesn't complain about the unused
+    // destructure — config is still useful for downstream consumers that
+    // pull SCRIPT_CONFIG off the services bag.
+    void config;
 
     return { boot, bootPoll };
 }

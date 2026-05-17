@@ -5,7 +5,7 @@
 // initial state coalesces with the visible state and skips the transition).
 
 import { NS, ROOT_ID } from '../../bootstrap/config';
-import { h } from '../utils/dom';
+import { h } from '../../utils/dom';
 import { IconManager, type IconName } from './IconManager';
 import type { ToastType } from '../../core/types';
 
@@ -25,10 +25,11 @@ export function createToastQueue(): ToastQueue {
 
     function ensureContainer(): HTMLDivElement {
         if (container && document.body.contains(container)) return container;
-        container = h('div', { class: `${NS}-toast-container` });
+        const next = h('div', { class: `${NS}-toast-container` }) as HTMLDivElement;
+        container = next;
         const root = document.getElementById(ROOT_ID) ?? document.body;
-        root.appendChild(container);
-        return container;
+        root.appendChild(next);
+        return next;
     }
 
     return {

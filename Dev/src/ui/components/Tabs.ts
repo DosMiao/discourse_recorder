@@ -3,7 +3,7 @@
 // owns the actual panel show/hide.
 
 import { NS } from '../../bootstrap/config';
-import { h } from '../utils/dom';
+import { h } from '../../utils/dom';
 import { IconManager, type IconName } from './IconManager';
 import type { TabId } from '../../bootstrap/config';
 

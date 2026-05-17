@@ -3,7 +3,7 @@
 // without re-rendering the whole tree.
 
 import { NS } from '../../bootstrap/config';
-import { h } from '../utils/dom';
+import { h } from '../../utils/dom';
 import { IconManager, type IconName } from './IconManager';
 
 export type ButtonVariant = 'default' | 'primary' | 'danger';

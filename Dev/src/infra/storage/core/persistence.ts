@@ -1,26 +1,22 @@
-// Persistence layer. GM_setValue is the canonical store (survives cross-origin,
-// syncs across browsers via Tampermonkey's account), but it isn't guaranteed
+// Persistence adapter. GM_setValue is the canonical store (Tampermonkey
+// syncs across devices and survives cross-origin), but it isn't guaranteed
 // when @grant is missing or when running under Violentmonkey's pageContext
-// injection — so we dual-write to localStorage as a fallback. Reads prefer GM
-// first, then fall back to localStorage.
+// injection — so we dual-write to localStorage as a fallback. Reads prefer
+// GM first, then fall back to localStorage. hasGM is detected once at
+// construction time so we don't pay the typeof cost on every read.
 
-// Factory shape mirrors the rest of the bootstrap so tests can inject a stub
-// storage. The default module-level export uses real GM_* / localStorage and
-// is enough for production.
-
-export interface Storage {
+export interface PersistenceAdapter {
     get<T>(key: string, fallback: T): T;
     set<T>(key: string, value: T): void;
+    setSerialized(key: string, serialized: string, value: unknown): void;
     del(key: string): void;
 }
 
-interface StorageDeps {
-    // Detect-once at construction time so we don't pay the typeof cost on
-    // every read in hot paths (recorder ticks).
+interface PersistenceDeps {
     hasGM?: boolean;
 }
 
-export function createStorage(deps: StorageDeps = {}): Storage {
+export function createPersistenceAdapter(deps: PersistenceDeps = {}): PersistenceAdapter {
     const hasGM =
         deps.hasGM ??
         (typeof GM_getValue === 'function' && typeof GM_setValue === 'function');
@@ -51,7 +47,16 @@ export function createStorage(deps: StorageDeps = {}): Storage {
                     typeof value === 'string' ? value : JSON.stringify(value);
                 localStorage.setItem(key, serialized);
             } catch {
-                // non-critical; storage is best-effort under hostile @grants
+                // non-critical: storage is best-effort under hostile @grants
+            }
+        },
+
+        setSerialized(key: string, serialized: string, value: unknown): void {
+            try {
+                if (hasGM) GM_setValue(key, value);
+                localStorage.setItem(key, serialized);
+            } catch {
+                // non-critical
             }
         },
 
@@ -65,7 +70,3 @@ export function createStorage(deps: StorageDeps = {}): Storage {
         },
     };
 }
-
-// Default singleton — most call-sites just import this. Tests can build their
-// own with createStorage().
-export const Storage: Storage = createStorage();

@@ -26,7 +26,10 @@ import {
 import { DiscourseApi } from '../extractor/discourseApi';
 import { AutoScroll } from './autoScroll';
 import { buildSessionSlug, exportPreferred } from '../exporter/exporter';
+import { logService } from '../infra/logging/core/LogService';
 import type { GenericChunk } from '../core/types';
+
+const log = logService.namespace('recorder');
 
 let scrollHandler: ((e: Event) => void) | null = null;
 let ioObserver: IntersectionObserver | null = null;
@@ -191,8 +194,11 @@ function start(): void {
         // Defer one tick so the dock paints the "recording" state before we
         // start hammering the API.
         setTimeout(() => {
-            void DiscourseApi.captureAll().catch((err) => {
-                console.error('[dtr] API capture failed', err);
+            void DiscourseApi.captureAll().catch((err: unknown) => {
+                const e = err as { message?: string };
+                log.error('api.capture.failed', {
+                    message: e?.message || String(err),
+                });
             });
         }, 200);
     } else if (Store.get('autoScroll')) {
@@ -273,8 +279,11 @@ async function autoSession(): Promise<void> {
 
     try {
         await exportPreferred();
-    } catch (err) {
-        console.error('[dtr] auto-session export failed', err);
+    } catch (err: unknown) {
+        const e = err as { message?: string };
+        log.error('autoSession.export.failed', {
+            message: e?.message || String(err),
+        });
     } finally {
         if (Store.state.recording) stop();
         autoSessionPending = false;

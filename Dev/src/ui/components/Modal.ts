@@ -3,7 +3,7 @@
 // future flows (confirmation dialogs, advanced export wizards, etc.).
 
 import { NS, ROOT_ID } from '../../bootstrap/config';
-import { h } from '../utils/dom';
+import { h } from '../../utils/dom';
 import { IconManager } from './IconManager';
 
 export interface ModalConfig {

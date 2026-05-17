@@ -17,9 +17,10 @@ import {
     THEME_TRANSITION_MS,
     THEME_TRANSITIONING_CLASS,
 } from '../../bootstrap/config';
-import { Storage, type Storage as StorageT } from '../../infra/storage/storage';
+import { storageOP, type StorageOperator } from '../../infra/storage/storageOperator';
 import { Bus, type EventBus } from '../../core/eventBus';
 import { Store, type Store as StoreT } from '../../core/store';
+import { emitThemeApplied } from '../events';
 import type { ThemeMode } from '../../core/types';
 
 export interface Theme {
@@ -30,13 +31,13 @@ export interface Theme {
 }
 
 interface ThemeDeps {
-    storage: StorageT;
+    storageOP: StorageOperator;
     store: StoreT;
     bus: EventBus;
 }
 
 export function createTheme(deps: ThemeDeps): Theme {
-    const { storage, store, bus } = deps;
+    const { storageOP: storage, store, bus } = deps;
 
     function resolved(mode: ThemeMode): 'light' | 'dark' {
         if (mode === 'dark' || mode === 'light') return mode;
@@ -60,7 +61,8 @@ export function createTheme(deps: ThemeDeps): Theme {
                 THEME_TRANSITION_MS
             );
         }
-        bus.emit('theme:applied', { mode, effective });
+        emitThemeApplied(mode, effective);
+        void bus;
     }
 
     function set(mode: ThemeMode, options: { skipTransition?: boolean } = {}): void {
@@ -80,5 +82,5 @@ export function createTheme(deps: ThemeDeps): Theme {
     return { apply, set, init, resolved };
 }
 
-// Default singleton — wired against the production Store/Storage/Bus.
-export const Theme: Theme = createTheme({ storage: Storage, store: Store, bus: Bus });
+// Default singleton — wired against the production Store/storageOP/Bus.
+export const Theme: Theme = createTheme({ storageOP, store: Store, bus: Bus });
