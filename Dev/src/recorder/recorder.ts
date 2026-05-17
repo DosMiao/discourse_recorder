@@ -14,7 +14,7 @@
 // re-renders. Pause/resume keeps the observers attached but short-circuits
 // the capture functions, so re-arming is instant.
 
-import { ROOT_ID } from '../core/constants';
+import { ROOT_ID } from '../bootstrap/config';
 import { Store } from '../core/store';
 import { Bus } from '../core/eventBus';
 import {
@@ -286,6 +286,15 @@ async function autoSession(): Promise<void> {
 // to one channel.
 Bus.on('autoscroll:stopped', (p) => {
     if (p.reason === 'end') Bus.emit('capture:complete', { reason: 'autoscroll' });
+});
+
+// On API capture failure, terminate the recorder. Without this the session
+// hangs (no observers fire because the API path skips them), leaving
+// autoSession waiting on capture:complete forever and the dock stuck in
+// "recording" state. The user-facing "switch to scroll mode" toast is
+// emitted by the dock listener, not here.
+Bus.on('apicapture:stopped', (p) => {
+    if (p.reason === 'error' && Store.state.recording) stop();
 });
 
 // Honour the autoSaveOnComplete setting whenever a normal (non-autoSession)

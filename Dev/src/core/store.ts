@@ -96,7 +96,7 @@ function loadInitialState(storage: StorageT): State {
         activeTab: storage.get<TabId>(STORAGE_KEYS.activeTab, 'capture'),
         captureStrategy: storage.get<CaptureStrategy>(
             STORAGE_KEYS.captureStrategy,
-            'scroll'
+            'api'
         ),
         autoSaveOnComplete: storage.get<boolean>(STORAGE_KEYS.autoSaveOnComplete, false),
         filenamePrefix: storage.get<boolean>(STORAGE_KEYS.filenamePrefix, true),

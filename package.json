@@ -1,6 +1,6 @@
 {
     "name": "discourse-text-recorder",
-    "version": "3.0.0",
+    "version": "4.0.0",
     "description": "Liquid-glass userscript that records Discourse forum posts (text + image URLs) as you scroll, then exports to Markdown + JSON.",
     "private": true,
     "main": "Dev/src/main.ts",

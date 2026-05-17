@@ -3,7 +3,7 @@
 // links); the JSON export preserves the same data as machine-readable
 // structured records for downstream processing.
 
-import { VERSION } from '../core/constants';
+import { VERSION } from '../bootstrap/config';
 import { Store } from '../core/store';
 import { Bus } from '../core/eventBus';
 import { getTopicMeta } from '../extractor/discourse';

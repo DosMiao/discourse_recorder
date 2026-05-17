@@ -8,7 +8,8 @@
 
 import { ZH_STRINGS, type StringKey } from './zh';
 import { EN_STRINGS } from './en';
-import type { Storage } from '../storage/storage';
+import { Storage as DefaultStorage, type Storage } from '../storage/storage';
+import { STORAGE_KEYS } from '../../bootstrap/config';
 
 export type Locale = 'zh' | 'en';
 export type LocalePreference = Locale | 'system';
@@ -111,3 +112,10 @@ export function createI18n(deps: I18nDeps): I18n {
 }
 
 export type { StringKey } from './zh';
+
+// Default singleton — wired against the production Storage. Modules that
+// just want to localise a string can import this directly.
+export const I18n: I18n = createI18n({
+    storage: DefaultStorage,
+    storageKey: STORAGE_KEYS.locale,
+});

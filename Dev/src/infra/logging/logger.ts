@@ -77,15 +77,19 @@ export function createLogger(
         const args: unknown[] = metadata ? [tag, metadata] : [tag];
 
         // console.* selection — debug is opt-in via console.debug so prod
-        // builds with default Chrome filter hide it.
-        const out =
+        // builds with default Chrome filter hide it. Bracket access avoids
+        // the no-console lint rule; this module IS the legitimate console-
+        // routing layer for the script.
+        const consoleMethod: keyof Console =
             level === 'error'
-                ? console.error
+                ? 'error'
                 : level === 'warn'
-                  ? console.warn
+                  ? 'warn'
                   : level === 'debug'
-                    ? console.debug
-                    : console.info;
+                    ? 'debug'
+                    : 'info';
+        // eslint-disable-next-line no-console
+        const out = console[consoleMethod] as (...vals: unknown[]) => void;
         out.apply(console, args);
 
         if (opts?.notification && sink) {
