@@ -1,0 +1,19 @@
+// ==UserScript==
+// @name         Discourse Text Recorder
+// @name:zh-CN   Discourse 论坛文字记录器
+// @namespace    https://github.com/local/discourse-text-recorder
+// @version      3.0.0
+// @description  Liquid-glass recorder for Discourse forums. Captures posts (text + image URLs) as you scroll, exports to Markdown + JSON. Light / dark / system theme.
+// @description:zh-CN  Discourse 论坛文字记录器（液态玻璃 UI · 浅色 / 深色 / 跟随系统）。滚动浏览时自动记录楼层正文与图片 URL，一键导出 Markdown + JSON。
+// @author       you
+// @match        *://*/*
+// @grant        GM_setClipboard
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @connect      *
+// @run-at       document-idle
+// @noframes
+// ==/UserScript==
