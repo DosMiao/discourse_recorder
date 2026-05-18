@@ -16,6 +16,7 @@ import {
 import { storageOP } from '../../infra/storage/storageOperator';
 import { Store } from '../../core/store';
 import { Bus } from '../../core/eventBus';
+import { Tasks } from '../../core/taskRegistry';
 import { Toast } from './Toast';
 import { IconManager } from './IconManager';
 import { h } from '../../utils/dom';
@@ -25,6 +26,8 @@ import { createTabs, type TabsHandle } from './Tabs';
 import { createCaptureTab } from './tabs/CaptureTab';
 import { createExportTab } from './tabs/ExportTab';
 import { createSettingsTab } from './tabs/SettingsTab';
+import { createActivityPanel, type ActivityPanelHandle } from './activity/ActivityPanel';
+import { retryImageFailures } from '../../exporter/imageRetry';
 import { formatHMS } from '../../exporter/exporter';
 import type { DockPosition } from '../../core/types';
 import type { I18n } from '../../infra/i18n/i18n';
@@ -44,6 +47,7 @@ interface DockRefs {
     statusDot: HTMLSpanElement;
     titleText: HTMLSpanElement;
     miniCountNum: HTMLSpanElement;
+    miniTaskDot: HTMLSpanElement;
     miniBtn: HTMLButtonElement;
     footerElapsed: HTMLSpanElement;
 }
@@ -54,6 +58,7 @@ export function createDock(deps: DockDeps): DockHandle {
     let captureTab: ReturnType<typeof createCaptureTab> | null = null;
     let exportTab: ReturnType<typeof createExportTab> | null = null;
     let settingsTab: ReturnType<typeof createSettingsTab> | null = null;
+    let activityPanel: ActivityPanelHandle | null = null;
     let tabs: TabsHandle | null = null;
     let elapsedTimer: ReturnType<typeof setInterval> | null = null;
     let dragOffset:
@@ -190,6 +195,10 @@ export function createDock(deps: DockDeps): DockHandle {
         else if (paused) refs.statusDot.classList.add(`${NS}-paused`);
 
         refs.miniCountNum.textContent = String(total);
+        // Activity indicator in mini mode: blue pulse if any task is running.
+        const anyRunning = Tasks.list().some((t) => t.status === 'running' || t.status === 'pending');
+        refs.miniTaskDot.hidden = !anyRunning;
+
         refs.footerElapsed.textContent = formatHMS(Store.elapsedMs());
 
         captureTab?.refresh();
@@ -212,10 +221,15 @@ export function createDock(deps: DockDeps): DockHandle {
             class: `${NS}-mini-count-num`,
             text: '0',
         }) as HTMLSpanElement;
+        const miniTaskDot = h('span', {
+            class: `${NS}-mini-task-dot`,
+            'aria-hidden': 'true',
+        }) as HTMLSpanElement;
+        miniTaskDot.hidden = true;
         const miniCount = h(
             'span',
             { class: `${NS}-mini-count`, 'aria-hidden': 'true' },
-            [miniCountNum]
+            [miniCountNum, miniTaskDot]
         );
         const titleBlock = h('div', { class: `${NS}-title` }, [
             statusDot,
@@ -244,6 +258,12 @@ export function createDock(deps: DockDeps): DockHandle {
         captureTab = createCaptureTab({ i18n });
         exportTab = createExportTab({ i18n });
         settingsTab = createSettingsTab({ i18n });
+        activityPanel = createActivityPanel({
+            i18n,
+            onRetry: (taskId) => {
+                void retryImageFailures(taskId);
+            },
+        });
 
         const initialTab = Store.get('activeTab');
         tabs = createTabs({
@@ -282,6 +302,7 @@ export function createDock(deps: DockDeps): DockHandle {
             captureTab.element,
             exportTab.element,
             settingsTab.element,
+            activityPanel.element,
             footer,
         ]);
 
@@ -302,6 +323,7 @@ export function createDock(deps: DockDeps): DockHandle {
             statusDot,
             titleText,
             miniCountNum,
+            miniTaskDot,
             miniBtn,
             footerElapsed,
         };
@@ -341,12 +363,24 @@ export function createDock(deps: DockDeps): DockHandle {
         const oldCapture = captureTab?.element;
         const oldExport = exportTab?.element;
         const oldSettings = settingsTab?.element;
+        const oldActivity = activityPanel?.element;
         captureTab = createCaptureTab({ i18n });
         exportTab = createExportTab({ i18n });
         settingsTab = createSettingsTab({ i18n });
+        // Destroy unhooks the old panel's bus listeners; the freshly-created
+        // panel seeds itself from Tasks.list() so any in-flight cards re-appear
+        // with the new locale's strings.
+        activityPanel?.destroy();
+        activityPanel = createActivityPanel({
+            i18n,
+            onRetry: (taskId) => {
+                void retryImageFailures(taskId);
+            },
+        });
         oldCapture?.replaceWith(captureTab.element);
         oldExport?.replaceWith(exportTab.element);
         oldSettings?.replaceWith(settingsTab.element);
+        oldActivity?.replaceWith(activityPanel.element);
         const active = Store.get('activeTab');
         captureTab.element.classList.toggle(
             `${NS}-tabpanel-active`,
@@ -377,6 +411,10 @@ export function createDock(deps: DockDeps): DockHandle {
         Bus.on('recorder:paused', () => refresh());
         Bus.on('recorder:resumed', () => refresh());
         Bus.on('recorder:cleared', () => refresh());
+        // Mini-dock task indicator needs to flip when tasks come and go.
+        Bus.on('task:registered', () => refresh());
+        Bus.on('task:ended', () => refresh());
+        Bus.on('task:dismissed', () => refresh());
         Bus.on('autoscroll:stopped', (p) => {
             if (p.reason === 'end') {
                 Toast.show(i18n.t('toast_autoscroll_end'), 'success', 2200);

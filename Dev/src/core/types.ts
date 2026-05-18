@@ -2,6 +2,7 @@
 // circular imports between Store ↔ Recorder ↔ Exporter.
 
 import type { TabId } from '../bootstrap/config';
+import type { TaskSnapshot } from './tasks';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 // 'sharded' is a ZIP variant that splits posts.md into per-range shards and
@@ -97,19 +98,17 @@ export interface EventMap {
     'autoscroll:started': void;
     'autoscroll:stopped': { reason: 'manual' | 'end' | 'max' };
     'apicapture:started': void;
-    'apicapture:progress': { done: number; total: number };
     'apicapture:stopped': { reason: 'end' | 'manual' | 'error'; error?: string };
     // Unified "capture pass complete" signal — fires once per session when
     // either AutoScroll exits with 'end' OR the API capture finishes. Consumed
     // by the auto-save chain so it doesn't have to subscribe to both.
     'capture:complete': { reason: 'autoscroll' | 'api' };
-    'export:progress': {
-        phase: 'idle' | 'downloading' | 'zipping' | 'done' | 'error';
-        done: number;
-        total: number;
-        failed: number;
-        message?: string;
-    };
+    // Unified task model — drives the Activity Panel and any rich-progress
+    // consumer. All progress reporting flows through Tasks (core/taskRegistry.ts).
+    'task:registered': TaskSnapshot;
+    'task:updated': TaskSnapshot;
+    'task:ended': TaskSnapshot;
+    'task:dismissed': { id: string };
     'theme:applied': { mode: ThemeMode; effective: 'light' | 'dark' };
     'locale:changed': { locale: 'zh' | 'en' };
     'tab:changed': { tab: TabId };

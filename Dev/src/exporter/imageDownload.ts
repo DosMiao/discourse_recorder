@@ -5,6 +5,10 @@
 //
 // Concurrency is capped to a small number of in-flight requests so we don't
 // hammer the CDN — long threads can easily have hundreds of images.
+//
+// Cancellation: pass `signal` in DownloadAllOptions. Already-in-flight
+// requests are aborted via GMXHRHandle.abort() / fetch's AbortSignal; the
+// worker loop bails before pulling the next URL when the signal fires.
 
 const MAX_CONCURRENT = 4;
 const TIMEOUT_MS = 30_000;
@@ -21,6 +25,18 @@ export interface DownloadProgress {
     total: number;
     failed: number;
     currentUrl?: string;
+}
+
+export interface ItemDoneInfo {
+    url: string;
+    ok: boolean;
+    error?: string;
+}
+
+export interface DownloadAllOptions {
+    onProgress?: (p: DownloadProgress) => void;
+    onItemDone?: (info: ItemDoneInfo) => void;
+    signal?: AbortSignal;
 }
 
 // Heuristic extension picker — prefer the URL path's extension, fall back to
@@ -64,15 +80,37 @@ function parseMimeFromHeaders(headers: string): string {
     return m && m[1] ? m[1].trim() : '';
 }
 
-function fetchViaGM(url: string): Promise<{ bytes: Uint8Array; mime: string }> {
+function fetchViaGM(
+    url: string,
+    signal?: AbortSignal
+): Promise<{ bytes: Uint8Array; mime: string }> {
     return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new Error('aborted'));
+            return;
+        }
+        let handle: GMXHRHandle | null = null;
+        let settled = false;
+        const onAbort = (): void => {
+            if (settled) return;
+            settled = true;
+            handle?.abort();
+            reject(new Error('aborted'));
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        const cleanup = (): void => {
+            settled = true;
+            signal?.removeEventListener('abort', onAbort);
+        };
         try {
-            GM_xmlhttpRequest({
+            handle = GM_xmlhttpRequest({
                 url,
                 method: 'GET',
                 responseType: 'arraybuffer',
                 timeout: TIMEOUT_MS,
                 onload: (r) => {
+                    if (settled) return;
+                    cleanup();
                     if (r.status >= 200 && r.status < 300 && r.response) {
                         const buf = r.response as ArrayBuffer;
                         resolve({
@@ -83,18 +121,34 @@ function fetchViaGM(url: string): Promise<{ bytes: Uint8Array; mime: string }> {
                         reject(new Error(`HTTP ${r.status} ${r.statusText}`));
                     }
                 },
-                onerror: () => reject(new Error('network error')),
-                ontimeout: () => reject(new Error('timeout')),
-                onabort: () => reject(new Error('aborted')),
+                onerror: () => {
+                    if (settled) return;
+                    cleanup();
+                    reject(new Error('network error'));
+                },
+                ontimeout: () => {
+                    if (settled) return;
+                    cleanup();
+                    reject(new Error('timeout'));
+                },
+                onabort: () => {
+                    if (settled) return;
+                    cleanup();
+                    reject(new Error('aborted'));
+                },
             });
         } catch (err) {
+            cleanup();
             reject(err instanceof Error ? err : new Error(String(err)));
         }
     });
 }
 
-async function fetchViaFetch(url: string): Promise<{ bytes: Uint8Array; mime: string }> {
-    const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+async function fetchViaFetch(
+    url: string,
+    signal?: AbortSignal
+): Promise<{ bytes: Uint8Array; mime: string }> {
+    const res = await fetch(url, { mode: 'cors', credentials: 'omit', signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const buf = await res.arrayBuffer();
     return {
@@ -105,32 +159,46 @@ async function fetchViaFetch(url: string): Promise<{ bytes: Uint8Array; mime: st
 
 async function downloadOne(
     url: string,
-    index: number
-): Promise<DownloadedImage | null> {
+    index: number,
+    signal?: AbortSignal
+): Promise<{ ok: true; image: DownloadedImage } | { ok: false; error: string }> {
     let result: { bytes: Uint8Array; mime: string };
     try {
         result =
             typeof GM_xmlhttpRequest === 'function'
-                ? await fetchViaGM(url)
-                : await fetchViaFetch(url);
-    } catch {
-        return null;
+                ? await fetchViaGM(url, signal)
+                : await fetchViaFetch(url, signal);
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
     const ext = pickExtension(url, result.mime);
     const base = sanitizeBasename(url);
     const seq = String(index + 1).padStart(4, '0');
     return {
-        url,
-        filename: `images/${seq}-${base}.${ext}`,
-        bytes: result.bytes,
-        mimeType: result.mime || `image/${ext}`,
+        ok: true,
+        image: {
+            url,
+            filename: `images/${seq}-${base}.${ext}`,
+            bytes: result.bytes,
+            mimeType: result.mime || `image/${ext}`,
+        },
     };
+}
+
+function normalizeOptions(
+    optsOrFn: DownloadAllOptions | ((p: DownloadProgress) => void) | undefined
+): DownloadAllOptions {
+    if (!optsOrFn) return {};
+    if (typeof optsOrFn === 'function') return { onProgress: optsOrFn };
+    return optsOrFn;
 }
 
 export async function downloadAll(
     urls: string[],
-    onProgress?: (p: DownloadProgress) => void
+    optsOrFn?: DownloadAllOptions | ((p: DownloadProgress) => void)
 ): Promise<DownloadedImage[]> {
+    const opts = normalizeOptions(optsOrFn);
+    const { onProgress, onItemDone, signal } = opts;
     const unique = Array.from(new Set(urls.filter(Boolean)));
     const total = unique.length;
     if (total === 0) return [];
@@ -142,12 +210,18 @@ export async function downloadAll(
 
     async function worker(): Promise<void> {
         while (cursor < total) {
+            if (signal?.aborted) return;
             const idx = cursor++;
             const url = unique[idx]!;
             onProgress?.({ done, total, failed, currentUrl: url });
-            const item = await downloadOne(url, idx);
-            if (item) results.push(item);
-            else failed++;
+            const item = await downloadOne(url, idx, signal);
+            if (item.ok) {
+                results.push(item.image);
+                onItemDone?.({ url, ok: true });
+            } else {
+                failed++;
+                onItemDone?.({ url, ok: false, error: item.error });
+            }
             done++;
             onProgress?.({ done, total, failed });
         }

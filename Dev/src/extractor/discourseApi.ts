@@ -12,17 +12,23 @@
 // (2000 posts ≈ 100 requests ≈ 30s) and avoids Discourse's virtual scroller
 // missing posts. The downside is it's Discourse-specific and depends on the
 // site keeping the JSON endpoint accessible to logged-in users.
+//
+// Cancellation: callers pass `signal` via CaptureAllOptions and get an
+// immediate `apicapture:stopped({reason:'manual'})` when they trigger it —
+// no need to wait for the in-flight fetch to settle. The task signal owned
+// by the Tasks registry is also honoured so the Activity Panel's cancel
+// button works end-to-end.
 
 import { Store } from '../core/store';
 import { Bus } from '../core/eventBus';
+import { Tasks } from '../core/taskRegistry';
 import { htmlToMarkdown } from './htmlToMarkdown';
 import { collectImageUrls } from './images';
 import type { PostData } from '../core/types';
+import type { TaskStage } from '../core/tasks';
 
 const BATCH_SIZE = 20;
 const REQUEST_GAP_MS = 120; // tiny pause between batches so we don't get rate-limited
-
-let aborted = false;
 
 interface ApiPost {
     id: number;
@@ -51,6 +57,11 @@ interface PostsResponse {
     };
 }
 
+export interface CaptureAllOptions {
+    signal?: AbortSignal;
+    onProgress?: (p: { done: number; total: number }) => void;
+}
+
 export function getTopicId(): number | null {
     // 1) <meta name="discourse-topic-id" content="502565">
     const metaEl = document.querySelector(
@@ -75,10 +86,11 @@ export function getTopicId(): number | null {
     return null;
 }
 
-async function fetchJSON<T>(url: string): Promise<T> {
+async function fetchJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
     const res = await fetch(url, {
         credentials: 'include',
         headers: { Accept: 'application/json' },
+        signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} (${url})`);
     return (await res.json()) as T;
@@ -129,79 +141,160 @@ function recomputeImageCount(): void {
     Store.patch({ imageCount: total });
 }
 
-export async function captureAll(): Promise<{ posts: number; total: number }> {
-    aborted = false;
-    const topicId = getTopicId();
-    if (topicId == null) {
-        throw new Error('无法识别 Discourse topic ID');
+export async function captureAll(opts: CaptureAllOptions = {}): Promise<{ posts: number; total: number }> {
+    const { signal: callerSignal, onProgress } = opts;
+
+    // Create the task up front so the panel shows "fetching topic..." stage
+    // even before we know the post count. total is updated once stream.length
+    // is known.
+    const stages: TaskStage[] = [
+        { id: 'fetch-topic', labelKey: 'task_stage_fetch_topic', status: 'pending' },
+        { id: 'fetch-batch', labelKey: 'task_stage_fetch_batch', status: 'pending' },
+    ];
+    const { id: taskId, signal: taskSignal } = Tasks.create({
+        kind: 'apicapture',
+        titleKey: 'task_title_apicapture',
+        unit: 'posts',
+        total: 0,
+        stages,
+        cancellable: true,
+        retryable: false,
+    });
+
+    // Single-shot stopped emit — fired by the task signal, the caller
+    // signal, or normal completion. Dedup so autoSession doesn't get told
+    // twice.
+    let stoppedEmitted = false;
+    const emitStopped = (
+        payload: { reason: 'manual' | 'end' | 'error'; error?: string }
+    ): void => {
+        if (stoppedEmitted) return;
+        stoppedEmitted = true;
+        Bus.emit('apicapture:stopped', payload);
+    };
+
+    let signalAborted = false;
+    const onSignalAbort = (): void => {
+        if (signalAborted) return;
+        signalAborted = true;
+        // Producer must emit immediately so autoSession's pending capture:complete
+        // listener doesn't wait on the in-flight fetch to settle.
+        emitStopped({ reason: 'manual' });
+    };
+    callerSignal?.addEventListener('abort', onSignalAbort, { once: true });
+    taskSignal.addEventListener('abort', onSignalAbort, { once: true });
+    // Pre-aborted callers — fast-bail.
+    if (callerSignal?.aborted || taskSignal.aborted) {
+        onSignalAbort();
+        Tasks.end(taskId, { status: 'cancelled' });
+        return { posts: Store.state.posts.size, total: 0 };
     }
 
-    Bus.emit('apicapture:started', undefined);
+    const isAborted = (): boolean => signalAborted;
+    const cleanup = (): void => {
+        callerSignal?.removeEventListener('abort', onSignalAbort);
+        taskSignal.removeEventListener('abort', onSignalAbort);
+    };
 
-    const topic = await fetchJSON<TopicResponse>(`/t/${topicId}.json`);
-    const slug = topic.slug;
-    const stream = topic.post_stream?.stream ?? [];
-    const seedPosts = topic.post_stream?.posts ?? [];
+    // We pass the task signal directly to fetch so an abort triggers the
+    // network request to reject immediately rather than waiting for the loop
+    // to notice. Caller signal still routes through `signalAborted` for the
+    // loop check, but fetch only honours one AbortSignal at a time.
+    const fetchSignal = taskSignal;
 
-    // Seed posts come back with the same shape as the batched fetch — merge
-    // them in first so the dock immediately shows progress.
-    let added = 0;
-    for (const p of seedPosts) {
-        if (mergePost(apiPostToPostData(p, slug, topicId))) added++;
-    }
-    if (added > 0) {
-        Store.state.lastCapturedAt = new Date();
-        recomputeImageCount();
-        Bus.emit('capture:tick', { added });
-    }
-    Bus.emit('apicapture:progress', { done: seedPosts.length, total: stream.length });
-
-    // Walk the stream in BATCH_SIZE chunks, skipping IDs we've already seen
-    // from the seed batch.
-    const seenIds = new Set(seedPosts.map((p) => p.id));
-    const remaining = stream.filter((id) => !seenIds.has(id));
-
-    let done = seedPosts.length;
-    for (let i = 0; i < remaining.length; i += BATCH_SIZE) {
-        if (aborted) {
-            Bus.emit('apicapture:stopped', { reason: 'manual' });
-            return { posts: Store.state.posts.size, total: stream.length };
+    try {
+        const topicId = getTopicId();
+        if (topicId == null) {
+            throw new Error('无法识别 Discourse topic ID');
         }
-        const ids = remaining.slice(i, i + BATCH_SIZE);
-        const qs = ids.map((id) => `post_ids[]=${id}`).join('&');
-        try {
-            const batch = await fetchJSON<PostsResponse>(`/t/${topicId}/posts.json?${qs}`);
-            const posts = batch.post_stream?.posts ?? [];
-            let batchAdded = 0;
-            for (const p of posts) {
-                if (mergePost(apiPostToPostData(p, slug, topicId))) batchAdded++;
+
+        Bus.emit('apicapture:started', undefined);
+        Tasks.update(taskId, { activeStageId: 'fetch-topic', stagePatch: { id: 'fetch-topic', status: 'active' } });
+
+        const topic = await fetchJSON<TopicResponse>(`/t/${topicId}.json`, fetchSignal);
+        const slug = topic.slug;
+        const stream = topic.post_stream?.stream ?? [];
+        const seedPosts = topic.post_stream?.posts ?? [];
+        Tasks.update(taskId, { stagePatch: { id: 'fetch-topic', status: 'done' }, total: stream.length });
+
+        // Seed posts come back with the same shape as the batched fetch — merge
+        // them in first so the dock immediately shows progress.
+        let added = 0;
+        for (const p of seedPosts) {
+            if (mergePost(apiPostToPostData(p, slug, topicId))) added++;
+        }
+        if (added > 0) {
+            Store.state.lastCapturedAt = new Date();
+            recomputeImageCount();
+            Bus.emit('capture:tick', { added });
+        }
+        onProgress?.({ done: seedPosts.length, total: stream.length });
+        Tasks.update(taskId, {
+            activeStageId: 'fetch-batch',
+            stagePatch: { id: 'fetch-batch', status: 'active', total: stream.length, done: seedPosts.length },
+            done: seedPosts.length,
+        });
+
+        const seenIds = new Set(seedPosts.map((p) => p.id));
+        const remaining = stream.filter((id) => !seenIds.has(id));
+
+        let done = seedPosts.length;
+        for (let i = 0; i < remaining.length; i += BATCH_SIZE) {
+            if (isAborted()) {
+                emitStopped({ reason: 'manual' });
+                Tasks.end(taskId, { status: 'cancelled' });
+                return { posts: Store.state.posts.size, total: stream.length };
             }
-            if (batchAdded > 0) {
-                Store.state.lastCapturedAt = new Date();
-                recomputeImageCount();
-                Bus.emit('capture:tick', { added: batchAdded });
+            const ids = remaining.slice(i, i + BATCH_SIZE);
+            const qs = ids.map((id) => `post_ids[]=${id}`).join('&');
+            try {
+                const batch = await fetchJSON<PostsResponse>(
+                    `/t/${topicId}/posts.json?${qs}`,
+                    fetchSignal
+                );
+                const posts = batch.post_stream?.posts ?? [];
+                let batchAdded = 0;
+                for (const p of posts) {
+                    if (mergePost(apiPostToPostData(p, slug, topicId))) batchAdded++;
+                }
+                if (batchAdded > 0) {
+                    Store.state.lastCapturedAt = new Date();
+                    recomputeImageCount();
+                    Bus.emit('capture:tick', { added: batchAdded });
+                }
+                done += posts.length;
+                onProgress?.({ done, total: stream.length });
+                Tasks.update(taskId, {
+                    done,
+                    stagePatch: { id: 'fetch-batch', done, total: stream.length },
+                });
+            } catch (err) {
+                if (isAborted()) {
+                    emitStopped({ reason: 'manual' });
+                    Tasks.end(taskId, { status: 'cancelled' });
+                    return { posts: Store.state.posts.size, total: stream.length };
+                }
+                const msg = err instanceof Error ? err.message : String(err);
+                emitStopped({ reason: 'error', error: msg });
+                Tasks.update(taskId, {
+                    addFailure: { id: `batch-${i}`, label: `batch #${i / BATCH_SIZE + 1} (ids ${ids[0]}-${ids[ids.length - 1]})`, error: msg },
+                });
+                Tasks.end(taskId, { status: 'failed', message: msg });
+                throw err;
             }
-            done += posts.length;
-            Bus.emit('apicapture:progress', { done, total: stream.length });
-        } catch (err) {
-            Bus.emit('apicapture:stopped', {
-                reason: 'error',
-                error: err instanceof Error ? err.message : String(err),
-            });
-            throw err;
+            if (i + BATCH_SIZE < remaining.length) {
+                await new Promise((r) => setTimeout(r, REQUEST_GAP_MS));
+            }
         }
-        if (i + BATCH_SIZE < remaining.length) {
-            await new Promise((r) => setTimeout(r, REQUEST_GAP_MS));
-        }
-    }
 
-    Bus.emit('apicapture:stopped', { reason: 'end' });
-    Bus.emit('capture:complete', { reason: 'api' });
-    return { posts: Store.state.posts.size, total: stream.length };
+        Tasks.update(taskId, { stagePatch: { id: 'fetch-batch', status: 'done' } });
+        emitStopped({ reason: 'end' });
+        Bus.emit('capture:complete', { reason: 'api' });
+        Tasks.end(taskId, { status: 'succeeded' });
+        return { posts: Store.state.posts.size, total: stream.length };
+    } finally {
+        cleanup();
+    }
 }
 
-export function abort(): void {
-    aborted = true;
-}
-
-export const DiscourseApi = { captureAll, abort, getTopicId };
+export const DiscourseApi = { captureAll, getTopicId };

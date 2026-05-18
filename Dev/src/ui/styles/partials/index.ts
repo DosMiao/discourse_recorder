@@ -10,6 +10,7 @@ import { BUTTONS_CSS } from './buttons';
 import { CONTROLS_CSS } from './controls';
 import { MODAL_CSS } from './modal';
 import { TOAST_CSS } from './toast';
+import { ACTIVITY_CSS } from './activity';
 import { ANIMATIONS_CSS } from './animations';
 
 export const PARTIAL_CSS_LIST = [
@@ -21,5 +22,6 @@ export const PARTIAL_CSS_LIST = [
     CONTROLS_CSS,
     MODAL_CSS,
     TOAST_CSS,
+    ACTIVITY_CSS,
     ANIMATIONS_CSS,
 ];

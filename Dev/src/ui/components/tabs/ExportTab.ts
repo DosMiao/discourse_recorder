@@ -10,11 +10,11 @@ import {
 } from '../../../bootstrap/config';
 import { storageOP } from '../../../infra/storage/storageOperator';
 import { Store } from '../../../core/store';
-import { Bus } from '../../../core/eventBus';
 import type { ExportFormat } from '../../../core/types';
 import {
     copyMarkdown,
     exportBaseName,
+    exportPageHtml,
     exportPreferred,
 } from '../../../exporter/exporter';
 import { h } from '../../../utils/dom';
@@ -142,6 +142,17 @@ export function createExportTab(deps: ExportTabDeps): ExportTabHandle {
         },
     });
 
+    const exportDomBtn: ButtonHandle = createButton({
+        label: i18n.t('btn_export_dom'),
+        icon: 'download',
+        fullWidth: true,
+        onClick: () => {
+            exportPageHtml();
+            Toast.show(i18n.t('toast_export_dom'), 'success');
+            maybeWarnLongPath(i18n);
+        },
+    });
+
     function onExport(): void {
         const fmt = Store.get('exportFormat');
         // Both 'zip' and 'sharded' are async ZIP builders (potentially long if
@@ -223,14 +234,9 @@ export function createExportTab(deps: ExportTabDeps): ExportTabHandle {
         ariaLabel: i18n.t('toggle_download_images'),
     });
 
-    // export progress (rendered into the export button when running)
-    Bus.on('export:progress', (p) => {
-        if (p.phase === 'downloading' || p.phase === 'zipping') {
-            exportBtn.setLabel(p.message ?? '...');
-        } else if (p.phase === 'done' || p.phase === 'error') {
-            refresh();
-        }
-    });
+    // Export progress lives in the Activity Panel now — the export button
+    // keeps its static label throughout. onExport handles button state
+    // (disabled/re-enabled) via the exportPreferred() promise chain.
 
     // ── assemble ─────────────────────────────────────────────
     const formatGroup = h('div', { class: `${NS}-group` }, [
@@ -256,7 +262,13 @@ export function createExportTab(deps: ExportTabDeps): ExportTabHandle {
             id: `${NS}-tabpanel-export`,
             'aria-labelledby': `${NS}-tab-export`,
         },
-        [formatGroup, exportBtn.element, copyBtn.element, advancedGroup]
+        [
+            formatGroup,
+            exportBtn.element,
+            copyBtn.element,
+            exportDomBtn.element,
+            advancedGroup,
+        ]
     ) as HTMLDivElement;
 
     function refresh(): void {

@@ -16,9 +16,12 @@ import {
     DEFAULT_SHARD_CAP_LINES,
     MIN_SHARD_CAP_LINES,
     MAX_SHARD_CAP_LINES,
+    ROOT_ID,
+    STYLE_ID,
+    PAGE_STYLE_ID,
 } from '../bootstrap/config';
 import { Store } from '../core/store';
-import { Bus } from '../core/eventBus';
+import { Tasks } from '../core/taskRegistry';
 import { getTopicMeta } from '../extractor/discourse';
 import { downloadAll, type DownloadedImage } from './imageDownload';
 import { buildZip, type ZipEntry } from './zip';
@@ -28,6 +31,7 @@ import type {
     ShardPlan,
     TopicMeta,
 } from '../core/types';
+import type { TaskStage } from '../core/tasks';
 
 // 60 chars (down from 120) leaves headroom for: 11-char date prefix, the
 // ~25-char Downloads root, the inside-zip `posts/p####-####.md` suffix (~22
@@ -238,6 +242,23 @@ export function buildJSON(): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Raw DOM snapshot — the page as it currently is, minus our injected UI.
+// Useful as a forensic backup when the structured parser missed something.
+// ──────────────────────────────────────────────────────────────────────────
+
+// Returns `<!DOCTYPE html>\n<html …>…</html>`. Clones the live tree first so
+// we can strip the recorder's own UI (#dtr-root) and style tags without
+// touching what the user sees. The clone is shallow on attributes but deep
+// on children — sufficient because we only delete nodes, never reorder.
+export function buildPageHtml(): string {
+    const clone = document.documentElement.cloneNode(true) as HTMLElement;
+    for (const id of [ROOT_ID, STYLE_ID, PAGE_STYLE_ID]) {
+        clone.querySelector(`#${id}`)?.remove();
+    }
+    return `<!DOCTYPE html>\n${clone.outerHTML}`;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Sharded export — index, by-user, posts.jsonl, per-range MD shards.
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -408,7 +429,7 @@ function buildIndexMd(
     lines.push(`# Index — ${t.posts} 楼 · ${t.users} 用户 · ${t.images} 图`);
     lines.push('');
     lines.push(
-        '> 元数据索引，无内容片段。AI 应通过"位置"列打开对应 shard 读取完整内容。'
+        '> 楼号→位置 元数据索引（按楼号升序）。**不含内容片段** —— 取内容请按"位置"列 `Read <shard> offset=<line>`。'
     );
     lines.push('');
     lines.push('| 楼 | 用户 | 位置 | 字符 | 行 | 图 | 赞 |');
@@ -452,7 +473,9 @@ function buildByUserMd(plan: ShardPlan, posts: PostData[]): string {
     const lines: string[] = [];
     lines.push(`# By User — ${sortedUsers.length} 用户`);
     lines.push('');
-    lines.push('> 用户索引，纯位置，无内容片段。');
+    lines.push(
+        '> 用户→楼号:行号 倒排（按楼数倒序）。**不含内容片段** —— 取内容请用对应分片 + 行号 `Read`。'
+    );
     lines.push('');
 
     for (const [user, userPosts] of sortedUsers) {
@@ -543,14 +566,26 @@ function buildReadmeMd(
         lines.push('');
     }
 
+    // Gap detection — Discourse threads can have deleted posts that leave
+    // holes in the postNumber range, so line N of posts.jsonl is NOT always
+    // post #N. Telling the AI this explicitly prevents off-by-one mistakes.
+    const firstPost = plan.shards[0]?.firstPost ?? 0;
+    const lastPost = plan.shards[plan.shards.length - 1]?.lastPost ?? 0;
+    const numberRange = lastPost - firstPost + 1;
+    const gapCount = Math.max(0, numberRange - t.posts);
+    const hasGaps = gapCount > 0;
+
     lines.push('## 文件清单');
     lines.push('');
-    lines.push('- [index.md](index.md) — 主索引（按楼号，只含结构元数据）');
-    lines.push('- [by-user.md](by-user.md) — 按用户索引（楼号 → 位置）');
     lines.push(
-        '- [posts.jsonl](posts.jsonl) — 一楼一行 JSON，适合 `Read offset=N` 寻址'
+        '- [index.md](index.md) — 楼号 → `<shard>:<line>` 主索引，按楼号升序'
     );
-    lines.push(`- posts/ — ${plan.shards.length} 个分片 Markdown`);
+    lines.push('- [by-user.md](by-user.md) — 用户 → 楼号:行号 倒排，按楼数倒序');
+    lines.push(
+        '- [posts.jsonl](posts.jsonl) — 一楼一行 JSON（按楼号升序），适合 `Grep` 字段筛选'
+    );
+    lines.push(`- posts/ — ${plan.shards.length} 个分片 Markdown，每片 ≤ ${plan.capLines} 行`);
+    lines.push('- page.html — 页面 DOM 快照（已剔除记录器自身 UI），可离线打开作为原始页面备份');
     if (downloaded.length > 0) {
         lines.push(`- images/ — ${downloaded.length} 张已下载图片`);
     }
@@ -558,15 +593,37 @@ function buildReadmeMd(
 
     lines.push('## 给 AI 的导航建议');
     lines.push('');
+    lines.push('**寻址路径（按需选用）：**');
+    lines.push('');
     lines.push(
-        '1. 先读 `index.md` 了解全貌（每行：楼号 · 用户 · 位置 · 字符 · 行 · 图 · 赞）'
-    );
-    lines.push('2. 找特定用户用 `by-user.md`，grep `@username`');
-    lines.push(
-        '3. 找特定楼号或关键词，用 `posts.jsonl`（每行一楼）或对应 `posts/p####-####.md` 分片'
+        '1. **按楼号精确定位** → 查 [index.md](index.md) 的"位置"列拿到 `<shard>:<line>` → `Read <shard> offset=<line> limit=<行数>`（行数列直接给）'
     );
     lines.push(
-        '4. **不要把 index.md / by-user.md 当成内容来源** —— 里面没有内容片段，只有定位元数据。'
+        '2. **找某用户全部发言** → 直接读 [by-user.md](by-user.md)；或 `Grep \'"username":"X"\' posts.jsonl`（结构化命中，含全部字段）'
+    );
+    lines.push(
+        '3. **按楼号查 JSON** → `Grep \'"postNumber":N\' posts.jsonl`（一行一楼，N 是楼号）'
+    );
+    lines.push(
+        '4. **全文/关键词搜索** → `Grep <keyword> posts/`（限定到分片目录避开 index/jsonl 噪音）'
+    );
+    lines.push('');
+    lines.push('**重要约束：**');
+    lines.push('');
+    if (hasGaps) {
+        lines.push(
+            `- ⚠ 楼号不连续：本帖 ${t.posts} 楼，楼号范围 #${firstPost}–#${lastPost}（${gapCount} 个空洞，论坛删帖造成）`
+        );
+    } else {
+        lines.push(
+            `- 楼号连续：本帖 ${t.posts} 楼，楼号范围 #${firstPost}–#${lastPost}（无空洞）`
+        );
+    }
+    lines.push(
+        '- **不要假设 `posts.jsonl 第 N 行 = 楼号 N`** —— 楼号查询永远走 index.md 或 grep `"postNumber":N`'
+    );
+    lines.push(
+        '- **不要把 index.md / by-user.md 当成内容来源** —— 里面没有内容片段，只有定位元数据；要内容必须打开对应分片或 jsonl 行'
     );
     lines.push('');
 
@@ -644,6 +701,10 @@ export function exportJSON(): void {
     download(buildJSON(), `${exportBaseName()}.json`, 'application/json');
 }
 
+export function exportPageHtml(): void {
+    download(buildPageHtml(), `${exportBaseName()}.html`, 'text/html');
+}
+
 export function exportBoth(): void {
     exportMarkdown();
     setTimeout(exportJSON, 250);
@@ -684,73 +745,93 @@ export async function exportZip(): Promise<void> {
     let downloaded: DownloadedImage[] = [];
 
     const urls = Store.get('downloadImages') ? collectAllImageUrls() : [];
-    if (urls.length > 0) {
-        Bus.emit('export:progress', {
-            phase: 'downloading',
-            done: 0,
-            total: urls.length,
-            failed: 0,
-            message: `下载图片 0/${urls.length}`,
-        });
-        downloaded = await downloadAll(urls, (p) => {
-            Bus.emit('export:progress', {
-                phase: 'downloading',
-                done: p.done,
-                total: p.total,
-                failed: p.failed,
-                message: `下载图片 ${p.done}/${p.total}${p.failed ? ` (失败 ${p.failed})` : ''}`,
+
+    const stages: TaskStage[] = [
+        { id: 'download', labelKey: 'task_stage_download', status: 'pending' },
+        { id: 'pack', labelKey: 'task_stage_pack', status: 'pending' },
+    ];
+    const { id: taskId, signal } = Tasks.create({
+        kind: 'export.zip',
+        titleKey: 'task_title_export_zip',
+        unit: 'images',
+        total: urls.length,
+        stages,
+        cancellable: true,
+        retryable: true,
+    });
+
+    try {
+        if (urls.length > 0) {
+            Tasks.update(taskId, { activeStageId: 'download', stagePatch: { id: 'download', status: 'active', total: urls.length } });
+            downloaded = await downloadAll(urls, {
+                signal,
+                onProgress: (p) => {
+                    Tasks.update(taskId, { done: p.done, total: p.total, stagePatch: { id: 'download', done: p.done, total: p.total } });
+                },
+                onItemDone: (item) => {
+                    if (!item.ok) {
+                        Tasks.update(taskId, {
+                            addFailure: { id: item.url, label: item.url, error: item.error ?? 'unknown' },
+                        });
+                    }
+                },
             });
+            Tasks.update(taskId, { stagePatch: { id: 'download', status: 'done' } });
+        } else {
+            Tasks.update(taskId, { stagePatch: { id: 'download', status: 'skipped' } });
+        }
+
+        if (signal.aborted) {
+            Tasks.end(taskId, { status: 'cancelled' });
+            return;
+        }
+
+        Tasks.update(taskId, { activeStageId: 'pack', stagePatch: { id: 'pack', status: 'active' } });
+
+        const localPaths = new Map<string, string>();
+        for (const img of downloaded) {
+            localPaths.set(img.url, img.filename);
+            entries.push({ path: `${baseName}/${img.filename}`, data: img.bytes });
+        }
+
+        const md = buildMarkdown(downloaded.length > 0 ? localPaths : undefined);
+        const json = buildJSON();
+        entries.push({
+            path: `${baseName}/${baseName}.md`,
+            data: utf8Encode(md),
         });
+        entries.push({
+            path: `${baseName}/${baseName}.json`,
+            data: utf8Encode(json),
+        });
+        entries.push({
+            path: `${baseName}/page.html`,
+            data: utf8Encode(buildPageHtml()),
+        });
+
+        // README so the zip recipient sees context (download stats, source URL)
+        // without opening the markdown or JSON.
+        const readme =
+            `# ${meta.title || '(untitled)'}\n\n` +
+            `Source: ${meta.url || location.href}\n\n` +
+            `Exported by Discourse Text Recorder v${VERSION} at ${new Date().toISOString()}.\n\n` +
+            `- ${Store.state.posts.size} 个楼层 / ${Store.state.genericChunks.length} 个文本段\n` +
+            `- 图片总数 ${urls.length}, 成功下载 ${downloaded.length}, 失败 ${urls.length - downloaded.length}\n` +
+            `- page.html: 页面 DOM 快照（已剔除记录器自身 UI）\n`;
+        entries.push({
+            path: `${baseName}/README.txt`,
+            data: utf8Encode(readme),
+        });
+
+        const blob = buildZip(entries);
+        downloadBlob(blob, `${baseName}.zip`);
+        Tasks.update(taskId, { stagePatch: { id: 'pack', status: 'done' } });
+        Tasks.end(taskId, { status: 'succeeded' });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        Tasks.end(taskId, { status: 'failed', message: msg });
+        throw err;
     }
-
-    Bus.emit('export:progress', {
-        phase: 'zipping',
-        done: downloaded.length,
-        total: urls.length,
-        failed: urls.length - downloaded.length,
-        message: '正在打包...',
-    });
-
-    const localPaths = new Map<string, string>();
-    for (const img of downloaded) {
-        localPaths.set(img.url, img.filename);
-        entries.push({ path: `${baseName}/${img.filename}`, data: img.bytes });
-    }
-
-    const md = buildMarkdown(downloaded.length > 0 ? localPaths : undefined);
-    const json = buildJSON();
-    entries.push({
-        path: `${baseName}/${baseName}.md`,
-        data: utf8Encode(md),
-    });
-    entries.push({
-        path: `${baseName}/${baseName}.json`,
-        data: utf8Encode(json),
-    });
-
-    // README so the zip recipient sees context (download stats, source URL)
-    // without opening the markdown or JSON.
-    const readme =
-        `# ${meta.title || '(untitled)'}\n\n` +
-        `Source: ${meta.url || location.href}\n\n` +
-        `Exported by Discourse Text Recorder v${VERSION} at ${new Date().toISOString()}.\n\n` +
-        `- ${Store.state.posts.size} 个楼层 / ${Store.state.genericChunks.length} 个文本段\n` +
-        `- 图片总数 ${urls.length}, 成功下载 ${downloaded.length}, 失败 ${urls.length - downloaded.length}\n`;
-    entries.push({
-        path: `${baseName}/README.txt`,
-        data: utf8Encode(readme),
-    });
-
-    const blob = buildZip(entries);
-    downloadBlob(blob, `${baseName}.zip`);
-
-    Bus.emit('export:progress', {
-        phase: 'done',
-        done: downloaded.length,
-        total: urls.length,
-        failed: urls.length - downloaded.length,
-        message: `导出完成: ${downloaded.length}/${urls.length} 张图片`,
-    });
 }
 
 // Sharded ZIP — README.md / index.md / by-user.md / posts.jsonl /
@@ -764,89 +845,112 @@ export async function exportSharded(): Promise<void> {
     let downloaded: DownloadedImage[] = [];
 
     const urls = Store.get('downloadImages') ? collectAllImageUrls() : [];
-    if (urls.length > 0) {
-        Bus.emit('export:progress', {
-            phase: 'downloading',
-            done: 0,
-            total: urls.length,
-            failed: 0,
-            message: `下载图片 0/${urls.length}`,
-        });
-        downloaded = await downloadAll(urls, (p) => {
-            Bus.emit('export:progress', {
-                phase: 'downloading',
-                done: p.done,
-                total: p.total,
-                failed: p.failed,
-                message: `下载图片 ${p.done}/${p.total}${p.failed ? ` (失败 ${p.failed})` : ''}`,
+
+    const stages: TaskStage[] = [
+        { id: 'download', labelKey: 'task_stage_download', status: 'pending' },
+        { id: 'render', labelKey: 'task_stage_render', status: 'pending' },
+        { id: 'pack', labelKey: 'task_stage_pack', status: 'pending' },
+    ];
+    const { id: taskId, signal } = Tasks.create({
+        kind: 'export.sharded',
+        titleKey: 'task_title_export_sharded',
+        unit: 'images',
+        total: urls.length,
+        stages,
+        cancellable: true,
+        retryable: true,
+    });
+
+    try {
+        if (urls.length > 0) {
+            Tasks.update(taskId, { activeStageId: 'download', stagePatch: { id: 'download', status: 'active', total: urls.length } });
+            downloaded = await downloadAll(urls, {
+                signal,
+                onProgress: (p) => {
+                    Tasks.update(taskId, { done: p.done, total: p.total, stagePatch: { id: 'download', done: p.done, total: p.total } });
+                },
+                onItemDone: (item) => {
+                    if (!item.ok) {
+                        Tasks.update(taskId, {
+                            addFailure: { id: item.url, label: item.url, error: item.error ?? 'unknown' },
+                        });
+                    }
+                },
             });
-        });
-    }
+            Tasks.update(taskId, { stagePatch: { id: 'download', status: 'done' } });
+        } else {
+            Tasks.update(taskId, { stagePatch: { id: 'download', status: 'skipped' } });
+        }
 
-    Bus.emit('export:progress', {
-        phase: 'zipping',
-        done: downloaded.length,
-        total: urls.length,
-        failed: urls.length - downloaded.length,
-        message: '正在分片打包...',
-    });
+        if (signal.aborted) {
+            Tasks.end(taskId, { status: 'cancelled' });
+            return;
+        }
 
-    const localPaths = new Map<string, string>();
-    for (const img of downloaded) {
-        localPaths.set(img.url, img.filename);
-        entries.push({ path: `${baseName}/${img.filename}`, data: img.bytes });
-    }
+        Tasks.update(taskId, { activeStageId: 'render', stagePatch: { id: 'render', status: 'active' } });
 
-    const posts = sortedPosts();
-    const rendered = renderAllPosts(
-        posts,
-        downloaded.length > 0 ? localPaths : undefined
-    );
-    const plan = planShards(rendered, capLines);
+        const localPaths = new Map<string, string>();
+        for (const img of downloaded) {
+            localPaths.set(img.url, img.filename);
+            entries.push({ path: `${baseName}/${img.filename}`, data: img.bytes });
+        }
 
-    for (const shard of plan.shards) {
+        const posts = sortedPosts();
+        const rendered = renderAllPosts(
+            posts,
+            downloaded.length > 0 ? localPaths : undefined
+        );
+        const plan = planShards(rendered, capLines);
+        Tasks.update(taskId, { stagePatch: { id: 'render', status: 'done' } });
+
+        Tasks.update(taskId, { activeStageId: 'pack', stagePatch: { id: 'pack', status: 'active' } });
+
+        for (const shard of plan.shards) {
+            entries.push({
+                path: `${baseName}/${shard.path}`,
+                data: utf8Encode(buildShardMd(shard, rendered)),
+            });
+        }
+
         entries.push({
-            path: `${baseName}/${shard.path}`,
-            data: utf8Encode(buildShardMd(shard, rendered)),
+            path: `${baseName}/index.md`,
+            data: utf8Encode(buildIndexMd(plan, posts, rendered)),
         });
+        entries.push({
+            path: `${baseName}/by-user.md`,
+            data: utf8Encode(buildByUserMd(plan, posts)),
+        });
+        entries.push({
+            path: `${baseName}/posts.jsonl`,
+            data: utf8Encode(buildJsonl(posts)),
+        });
+        entries.push({
+            path: `${baseName}/page.html`,
+            data: utf8Encode(buildPageHtml()),
+        });
+        entries.push({
+            path: `${baseName}/README.md`,
+            data: utf8Encode(
+                buildReadmeMd(
+                    meta,
+                    plan,
+                    downloaded,
+                    urls,
+                    Store.state.startedAt,
+                    Store.elapsedMs()
+                )
+            ),
+        });
+
+        const blob = buildZip(entries);
+        downloadBlob(blob, `${baseName}.zip`);
+        Tasks.update(taskId, { stagePatch: { id: 'pack', status: 'done' } });
+        Tasks.end(taskId, { status: 'succeeded' });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        Tasks.end(taskId, { status: 'failed', message: msg });
+        throw err;
     }
-
-    entries.push({
-        path: `${baseName}/index.md`,
-        data: utf8Encode(buildIndexMd(plan, posts, rendered)),
-    });
-    entries.push({
-        path: `${baseName}/by-user.md`,
-        data: utf8Encode(buildByUserMd(plan, posts)),
-    });
-    entries.push({
-        path: `${baseName}/posts.jsonl`,
-        data: utf8Encode(buildJsonl(posts)),
-    });
-    entries.push({
-        path: `${baseName}/README.md`,
-        data: utf8Encode(
-            buildReadmeMd(
-                meta,
-                plan,
-                downloaded,
-                urls,
-                Store.state.startedAt,
-                Store.elapsedMs()
-            )
-        ),
-    });
-
-    const blob = buildZip(entries);
-    downloadBlob(blob, `${baseName}.zip`);
-
-    Bus.emit('export:progress', {
-        phase: 'done',
-        done: downloaded.length,
-        total: urls.length,
-        failed: urls.length - downloaded.length,
-        message: `分片导出完成: ${plan.shards.length} 片 / ${downloaded.length}/${urls.length} 图`,
-    });
 }
 
 const _enc = new TextEncoder();

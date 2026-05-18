@@ -5,7 +5,6 @@
 import { NS, STORAGE_KEYS } from '../../../bootstrap/config';
 import { storageOP } from '../../../infra/storage/storageOperator';
 import { Store } from '../../../core/store';
-import { Bus } from '../../../core/eventBus';
 import type { CaptureStrategy } from '../../../core/types';
 import { Recorder } from '../../../recorder/recorder';
 import { formatHMS, previewShardPlan } from '../../../exporter/exporter';
@@ -156,26 +155,13 @@ export function createCaptureTab(deps: CaptureTabDeps): CaptureTabHandle {
         ariaLabel: i18n.t('section_capture_strategy'),
     });
 
-    // ── api capture progress (only shown during API capture) ──
-    const apiProgressText = h('div', {
-        class: `${NS}-toggle-desc`,
-        style: { paddingTop: '6px' },
-    }) as HTMLDivElement;
-    apiProgressText.hidden = true;
-
-    Bus.on('apicapture:progress', (p) => {
-        apiProgressText.hidden = false;
-        apiProgressText.textContent = `${i18n.t('toast_apicapture_progress')} ${p.done}/${p.total}`;
-    });
-    Bus.on('apicapture:stopped', () => {
-        window.setTimeout(() => (apiProgressText.hidden = true), 1500);
-    });
+    // API capture progress is rendered by the Activity Panel (in-dock task
+    // card with progress bar + ETA + cancel). No inline text needed here.
 
     // ── assemble ──────────────────────────────────────────────
     const strategyGroup = h('div', { class: `${NS}-group` }, [
         h('div', { class: `${NS}-group-title`, text: i18n.t('section_capture_strategy') }),
         strategyCard.element,
-        apiProgressText,
     ]);
 
     const element = h(

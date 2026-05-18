@@ -36,6 +36,11 @@ let ioObserver: IntersectionObserver | null = null;
 let mutObserver: MutationObserver | null = null;
 let captureScheduled = false;
 let scrollScheduled = false;
+// Owned by start() while an API capture is in flight; cleared by the
+// captureAll .finally. stop() aborts via this so cancellation propagates
+// through AbortSignal — the task system uses the same signal to drive
+// its cancel button.
+let captureController: AbortController | null = null;
 
 function recomputeImageCount(): void {
     let total = 0;
@@ -191,15 +196,21 @@ function start(): void {
     //                user's 'autoScroll' toggle.
     const strategy = Store.get('captureStrategy');
     if (strategy === 'api' && mode === 'discourse') {
+        captureController = new AbortController();
+        const controller = captureController;
         // Defer one tick so the dock paints the "recording" state before we
         // start hammering the API.
         setTimeout(() => {
-            void DiscourseApi.captureAll().catch((err: unknown) => {
-                const e = err as { message?: string };
-                log.error('api.capture.failed', {
-                    message: e?.message || String(err),
+            void DiscourseApi.captureAll({ signal: controller.signal })
+                .catch((err: unknown) => {
+                    const e = err as { message?: string };
+                    log.error('api.capture.failed', {
+                        message: e?.message || String(err),
+                    });
+                })
+                .finally(() => {
+                    if (captureController === controller) captureController = null;
                 });
-            });
         }, 200);
     } else if (Store.get('autoScroll')) {
         setTimeout(() => AutoScroll.start(), 400);
@@ -209,7 +220,11 @@ function start(): void {
 function stop(): void {
     if (!Store.state.recording) return;
     AutoScroll.stop();
-    DiscourseApi.abort();
+    // Cancel the in-flight API capture via its AbortController. captureAll's
+    // own signal listener emits apicapture:stopped immediately so autoSession
+    // / autoSaveOnComplete don't have to wait for the in-flight fetch to settle.
+    captureController?.abort();
+    captureController = null;
     teardown();
     Store.patch({ recording: false, paused: false });
     Bus.emit('recorder:stopped', undefined);
@@ -308,13 +323,22 @@ Bus.on('apicapture:stopped', (p) => {
 
 // Honour the autoSaveOnComplete setting whenever a normal (non-autoSession)
 // run completes its capture pass. autoSession runs its own export, so we
-// skip this branch while one is in flight.
+// skip this branch while one is in flight. The export's success or failure
+// surfaces in the Activity Panel as a task card; we just need to log here so
+// debug telemetry isn't blind to the failure.
 Bus.on('capture:complete', () => {
     if (autoSessionPending) return;
     if (!Store.get('autoSaveOnComplete')) return;
-    void Promise.resolve(exportPreferred()).then(() => {
-        if (Store.state.recording) stop();
-    });
+    void Promise.resolve(exportPreferred())
+        .catch((err: unknown) => {
+            const e = err as { message?: string };
+            log.error('autoSave.export.failed', {
+                message: e?.message || String(err),
+            });
+        })
+        .finally(() => {
+            if (Store.state.recording) stop();
+        });
 });
 
 export const Recorder = { start, stop, pause, resume, clear, autoSession };
